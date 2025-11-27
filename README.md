@@ -4,7 +4,15 @@ This project trains a compact CNN on the 5G channel-frequency response dataset a
 
 ## 1. Dataset snapshot
 
-- Files: `dataset/dataset_SNR10_indoor_21-11-17_03-07.mat`, `dataset/dataset_SNR10_outdoor.mat`, `dataset/dataset_SNR20_indoor_21-11-17_01-50.mat`, `dataset/dataset_SNR20_outdoor.mat`, `dataset/dataset_SNR50_indoor_21-11-16_23-11.mat`, `dataset/dataset_SNR50_outdoor.mat`
+The project uses the **CSI Dataset towards 5G NR High-Precision Positioning**.
+
+**Download Instructions:**
+1. Visit [IEEE DataPort](https://ieee-dataport.org/open-access/csi-dataset-towards-5g-nr-high-precision-positioning).
+2. Log in (free account required).
+3. Download the `.mat` files (e.g., `dataset_SNR50_outdoor.mat`).
+4. Place them in the `dataset/` directory.
+
+- Expected files: `dataset/dataset_SNR10_indoor_21-11-17_03-07.mat`, `dataset/dataset_SNR10_outdoor.mat`, `dataset/dataset_SNR20_indoor_21-11-17_01-50.mat`, `dataset/dataset_SNR20_outdoor.mat`, `dataset/dataset_SNR50_indoor_21-11-16_23-11.mat`, `dataset/dataset_SNR50_outdoor.mat`
 - Feature shape: `(3876, 4, 16, 193)` with `float64` values (samples, Rx antennas, subcarriers, frequency bins)
 - Target shape: `(3876, 3)` giving ground-truth `[x, y, z]` coordinates per sample
 - The training script defaults to `dataset_SNR50_outdoor.mat`, but you can switch to any file above via `--dataset-file`.
@@ -14,7 +22,7 @@ This project trains a compact CNN on the 5G channel-frequency response dataset a
 Concrete ML currently requires Python 3.12, so we recommend creating or using a `uv` venv that targets that interpreter. If you already have one, rerun the commands inside it with `uv run`.
 
 ```bash
-cd /Users/rbkv2/src/csi_positioning
+cd csi_positioning
 uv run python --version         # confirm the active interpreter is Python 3.12.x
 uv pip install --upgrade pip    # keep the managed pip current
 uv pip install -r requirements/location_cnn.txt
