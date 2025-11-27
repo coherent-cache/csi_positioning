@@ -7,6 +7,7 @@ This project trains a compact CNN on the 5G channel-frequency response dataset a
 The project uses the **CSI Dataset towards 5G NR High-Precision Positioning**.
 
 **Download Instructions:**
+
 1. Visit [IEEE DataPort](https://ieee-dataport.org/open-access/csi-dataset-towards-5g-nr-high-precision-positioning).
 2. Log in (free account required).
 3. Download the `.mat` files (e.g., `dataset_SNR50_outdoor.mat`).
