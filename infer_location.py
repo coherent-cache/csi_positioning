@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 from typing import Union
 
@@ -258,6 +259,12 @@ def main() -> int:
         )
         args.fhe_mode = "disable"
 
+    if args.fhe_mode == "execute" and quantized_module is not None:
+        print("Generating FHE keys...")
+        t_keygen = time.time()
+        quantized_module.fhe_circuit.keygen()
+        print(f"Key generation complete in {time.time() - t_keygen:.2f}s.")
+
     print(f"Running inference on {len(indices)} samples...")
     for idx in tqdm(indices, desc="Inference Progress", unit="sample"):
         sample = val_features[idx : idx + 1]
@@ -272,12 +279,16 @@ def main() -> int:
         tqdm.write(f"  ℓ1 error={mean_absolute_error(target, prediction):.4f}")
 
         if quantized_module is not None:
+            t_start = time.time()
             fhe_pred = quantized_module.forward(sample, fhe=args.fhe_mode)
+            t_end = time.time()
             if isinstance(fhe_pred, tuple):
                 fhe_pred = np.array(fhe_pred[0])
             tqdm.write(
                 f"  {args.fhe_mode} (quantized) -> {np.array(fhe_pred).reshape(3).tolist()}"
             )
+            if args.fhe_mode == "execute":
+                tqdm.write(f"  FHE inference took {t_end - t_start:.2f}s")
 
     print("Inference done.")
     print(f"Normalization stats: mean={mean:.5f}, std={std:.5f}")
