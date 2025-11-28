@@ -15,20 +15,20 @@ class LocationCNN(nn.Module):
         super().__init__()
 
         self.feature_extractor = nn.Sequential(
-            nn.Conv2d(in_channels, 16, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels, 16, kernel_size=3, padding=1, stride=2),
             nn.ReLU(),
-            nn.AvgPool2d(kernel_size=(1, 2)),
-            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            # nn.AvgPool2d(kernel_size=(1, 2)),  Removed to reduce complexity
+            nn.Conv2d(16, 32, kernel_size=3, padding=1, stride=2),
             nn.ReLU(),
-            nn.AvgPool2d(kernel_size=(2, 2)),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            # nn.AvgPool2d(kernel_size=(2, 2)),  Removed to reduce complexity
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, stride=2),
             nn.ReLU(),
             nn.AvgPool2d(kernel_size=(2, 2)),
         )
 
         self.regressor = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(64 * 4 * 24, 128),
+            nn.Linear(64 * 1 * 12, 128),  # Adjusted input size for new strides
             nn.ReLU(),
             nn.Linear(128, num_outputs),
         )
@@ -38,7 +38,3 @@ class LocationCNN(nn.Module):
 
         features = self.feature_extractor(inputs)
         return self.regressor(features)
-
-
-
-
