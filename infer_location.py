@@ -76,7 +76,13 @@ def parse_args() -> argparse.Namespace:
         "--num-samples",
         type=int,
         default=3,
-        help="Number of validation samples to display.",
+        help="Number of validation samples to display in the 3D scatter plot.",
+    )
+    parser.add_argument(
+        "--max-inference-samples",
+        type=int,
+        default=None,
+        help="Optional cap on how many validation samples to run inference on (random subset).",
     )
     parser.add_argument(
         "--seed",
@@ -132,6 +138,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="cpu",
         help="Device used by the Concrete compiler (cpu or cuda).",
+    )
+    parser.add_argument(
+        "--results-csv",
+        type=Path,
+        default=Path("artifacts/inference_results.csv"),
+        help="Path where the inference results CSV will be written.",
     )
     return parser.parse_args()
 
@@ -286,6 +298,13 @@ def plot_coordinate_comparison(
     print(f"Saved inference plot to {output_path}")
 
 
+def compute_error_metrics(
+    ground_truth: np.ndarray, predictions: np.ndarray
+) -> tuple[float, float]:
+    distances = np.linalg.norm(predictions - ground_truth, axis=1)
+    return float(distances.mean()), float(distances.max())
+
+
 def main() -> int:
     args = parse_args()
 
@@ -316,11 +335,6 @@ def main() -> int:
     checkpoint = torch.load(args.checkpoint, map_location="cpu")
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
-
-    rng = np.random.default_rng(args.seed)
-    indices = rng.choice(
-        len(val_features), size=min(args.num_samples, len(val_features)), replace=False
-    )
 
     # Load quantized module (if available) or compile on the fly if needed for FHE
     quantized_module = None
@@ -357,54 +371,113 @@ def main() -> int:
         quantized_module.fhe_circuit.keygen()
         print(f"Key generation complete in {time.time() - t_keygen:.2f}s.")
 
-    print(f"Running inference on {len(indices)} samples...")
+    rng = np.random.default_rng(args.seed)
+    if args.max_inference_samples is not None:
+        subset_size = max(0, min(args.max_inference_samples, len(val_features)))
+        indices = rng.choice(len(val_features), size=subset_size, replace=False)
+    else:
+        indices = np.arange(len(val_features))
+
+    print(f"Running inference on {len(indices)} validation samples...")
     collected_targets: list[np.ndarray] = []
     collected_predictions: list[np.ndarray] = []
     collected_fhe_predictions: list[np.ndarray] = []
+    plain_durations: list[float] = []
+    fhe_durations: list[float] = []
+
+    fhe_available = quantized_module is not None and args.fhe_mode != "disable"
 
     for idx in tqdm(indices, desc="Inference Progress", unit="sample"):
         sample = val_features[idx : idx + 1]
         target = val_targets[idx]
 
         input_tensor = torch.from_numpy(sample).float()
+        t_plain_start = time.time()
         with torch.no_grad():
             prediction = model(input_tensor).numpy().reshape(3)
+        t_plain_end = time.time()
 
-        # Print details only if not using tqdm to avoid messing up the bar, or use tqdm.write
         tqdm.write(f"Sample {idx}: target={target.tolist()} pred={prediction.tolist()}")
         tqdm.write(f"  ℓ1 error={mean_absolute_error(target, prediction):.4f}")
 
         collected_targets.append(target)
         collected_predictions.append(prediction)
+        plain_durations.append(t_plain_end - t_plain_start)
 
-        if quantized_module is not None:
+        if fhe_available:
             t_start = time.time()
             fhe_pred = quantized_module.forward(sample, fhe=args.fhe_mode)
             t_end = time.time()
             if isinstance(fhe_pred, tuple):
                 fhe_pred = np.array(fhe_pred[0])
-            tqdm.write(
-                f"  {args.fhe_mode} (quantized) -> {np.array(fhe_pred).reshape(3).tolist()}"
-            )
+            fhe_array = np.array(fhe_pred).reshape(3)
+            tqdm.write(f"  {args.fhe_mode} (quantized) -> {fhe_array.tolist()}")
             if args.fhe_mode == "execute":
                 tqdm.write(f"  FHE inference took {t_end - t_start:.2f}s")
 
-            collected_fhe_predictions.append(np.array(fhe_pred).reshape(3))
+            collected_fhe_predictions.append(fhe_array)
+            fhe_durations.append(t_end - t_start)
 
     print("Inference done.")
     print(f"Normalization stats: mean={mean:.5f}, std={std:.5f}")
 
-    if collected_targets and collected_predictions:
-        plot_coordinate_comparison(
-            targets=np.stack(collected_targets),
-            predictions=np.stack(collected_predictions),
-            fhe_predictions=np.stack(collected_fhe_predictions)
-            if collected_fhe_predictions
-            else None,
-            output_path=args.plot_path,
-            dpi=args.plot_dpi,
-            fhe_mode=args.fhe_mode,
-        )
+    if not collected_targets or not collected_predictions:
+        return 1
+
+    ground_truth = np.stack(collected_targets)
+    pred_plain = np.stack(collected_predictions)
+    if collected_fhe_predictions:
+        pred_fhe = np.stack(collected_fhe_predictions)
+    else:
+        pred_fhe = np.full_like(pred_plain, np.nan)
+
+    # Compute metrics
+    plain_mpe, plain_max = compute_error_metrics(ground_truth, pred_plain)
+    plain_time = float(np.mean(plain_durations)) if plain_durations else float("nan")
+
+    if not np.isnan(pred_fhe).all():
+        fhe_mpe, fhe_max = compute_error_metrics(ground_truth, pred_fhe)
+        fhe_time = float(np.mean(fhe_durations)) if fhe_durations else float("nan")
+    else:
+        fhe_mpe = fhe_max = fhe_time = float("nan")
+
+    header_fields = [
+        "gt_x",
+        "gt_y",
+        "gt_z",
+        "pred_plain_x",
+        "pred_plain_y",
+        "pred_plain_z",
+        "pred_fhe_x",
+        "pred_fhe_y",
+        "pred_fhe_z",
+    ]
+    header = ",".join(header_fields)
+    args.results_csv.parent.mkdir(parents=True, exist_ok=True)
+    combined = np.hstack((ground_truth, pred_plain, pred_fhe))
+    np.savetxt(args.results_csv, combined, delimiter=",", header=header, comments="")
+    print(f"Saved inference results to {args.results_csv}")
+
+    # Print comparison table
+    print("\n=== Performance Comparison ===")
+    print("Metric               | Plain          | FHE")
+    print("---------------------+----------------+----------------")
+    print(f"Mean Position Error  | {plain_mpe:14.4f} | {fhe_mpe:14.4f}")
+    print(f"Max Error            | {plain_max:14.4f} | {fhe_max:14.4f}")
+    print(f"Avg time per sample  | {plain_time:14.4f}s | {fhe_time:14.4f}s")
+
+    # Limit scatter plot to requested number of samples to keep it readable
+    scatter_count = min(args.num_samples, len(ground_truth))
+    plot_coordinate_comparison(
+        targets=ground_truth[:scatter_count],
+        predictions=pred_plain[:scatter_count],
+        fhe_predictions=pred_fhe[:scatter_count]
+        if not np.isnan(pred_fhe).all()
+        else None,
+        output_path=args.plot_path,
+        dpi=args.plot_dpi,
+        fhe_mode=args.fhe_mode,
+    )
     return 0
 
 
