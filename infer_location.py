@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from typing import Union
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from concrete.fhe import Configuration
@@ -73,12 +72,6 @@ def parse_args() -> argparse.Namespace:
         help="Optional compiled QuantizedModule for FHE runs.",
     )
     parser.add_argument(
-        "--num-samples",
-        type=int,
-        default=3,
-        help="Number of validation samples to display in the 3D scatter plot.",
-    )
-    parser.add_argument(
         "--max-inference-samples",
         type=int,
         default=None,
@@ -114,18 +107,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=7,
         help="Rounding thresholds used during compilation (None disables).",
-    )
-    parser.add_argument(
-        "--plot-path",
-        type=Path,
-        default=Path("plots/inference_scatter.png"),
-        help="Where to save the 3D scatter plot comparing targets/predictions/FHE outputs.",
-    )
-    parser.add_argument(
-        "--plot-dpi",
-        type=int,
-        default=150,
-        help="Image resolution for the saved inference plot.",
     )
     parser.add_argument(
         "--p-error",
@@ -217,85 +198,6 @@ def compile_model_on_the_fly(args):
     except Exception as exc:  # pragma: no cover
         print("Compilation failed:", exc)
         return None
-
-
-def plot_coordinate_comparison(
-    targets: np.ndarray,
-    predictions: np.ndarray,
-    fhe_predictions: np.ndarray | None,
-    output_path: Path,
-    dpi: int,
-    fhe_mode: str,
-) -> None:
-    """Render a 3D scatter plot comparing clear and FHE coordinates."""
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    fig = plt.figure(figsize=(8, 6))
-    ax = fig.add_subplot(111, projection="3d")
-
-    ax.scatter(
-        targets[:, 0],
-        targets[:, 1],
-        targets[:, 2],
-        c="black",
-        marker="x",
-        s=60,
-        label="Target",
-    )
-
-    ax.scatter(
-        predictions[:, 0],
-        predictions[:, 1],
-        predictions[:, 2],
-        c="tab:blue",
-        marker="o",
-        s=50,
-        label="Prediction",
-    )
-
-    if fhe_predictions is not None and fhe_predictions.size > 0:
-        ax.scatter(
-            fhe_predictions[:, 0],
-            fhe_predictions[:, 1],
-            fhe_predictions[:, 2],
-            c="tab:red",
-            marker="^",
-            s=50,
-            label=f"FHE ({fhe_mode})",
-        )
-
-    for tgt, pred in zip(targets, predictions):
-        ax.plot(
-            [tgt[0], pred[0]],
-            [tgt[1], pred[1]],
-            [tgt[2], pred[2]],
-            color="gray",
-            linestyle="--",
-            alpha=0.4,
-        )
-
-    if fhe_predictions is not None and fhe_predictions.size == len(targets):
-        for tgt, fhe_pred in zip(targets, fhe_predictions):
-            ax.plot(
-                [tgt[0], fhe_pred[0]],
-                [tgt[1], fhe_pred[1]],
-                [tgt[2], fhe_pred[2]],
-                color="tab:red",
-                linestyle=":",
-                alpha=0.5,
-            )
-
-    ax.set_title("UE Coordinate Comparison")
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_zlabel("Z")
-    ax.legend(loc="upper left")
-    ax.grid(True, linestyle="--", alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=dpi)
-    plt.close(fig)
-    print(f"Saved inference plot to {output_path}")
 
 
 def compute_error_metrics(
@@ -466,18 +368,6 @@ def main() -> int:
     print(f"Max Error            | {plain_max:14.4f} | {fhe_max:14.4f}")
     print(f"Avg time per sample  | {plain_time:14.4f}s | {fhe_time:14.4f}s")
 
-    # Limit scatter plot to requested number of samples to keep it readable
-    scatter_count = min(args.num_samples, len(ground_truth))
-    plot_coordinate_comparison(
-        targets=ground_truth[:scatter_count],
-        predictions=pred_plain[:scatter_count],
-        fhe_predictions=pred_fhe[:scatter_count]
-        if not np.isnan(pred_fhe).all()
-        else None,
-        output_path=args.plot_path,
-        dpi=args.plot_dpi,
-        fhe_mode=args.fhe_mode,
-    )
     return 0
 
 
