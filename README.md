@@ -44,7 +44,7 @@ The repository ships four standalone scripts that mirror the plan above. Each sc
 2. **FHE compilation (`compile_fhe_location.py`)**
 
    - Point at the same dataset + checkpoint: `uv run python compile_fhe_location.py --checkpoint checkpoints/location_cnn.pt`
-   - Generates a quantized module pickle at `artifacts/location_quantized.pkl` and saves debugging artifacts (MLIR, graph, statistics) under `artifacts/location_quantized_debug/`.
+   - Generates a quantized module JSON at `artifacts/location_quantized.json` and saves debugging artifacts (MLIR, graph, statistics) under `artifacts/location_quantized_debug/`.
    - Uses Concrete ML `compile_torch_model` with `AveragePool` layers, rounding thresholds, and basic packing settings; make sure the checkpoint exists so the conversion pipeline reuses it instead of triggering another training run.
 
 3. **Visualization (`plot_training_curves.py`)**
@@ -54,5 +54,10 @@ The repository ships four standalone scripts that mirror the plan above. Each sc
 
 4. **Inference (`infer_location.py`)**
    - Runs the trained CNN (via `torch`) on several validation samples and optionally loads the quantized module to show `fhe="simulate"` or `fhe="execute"` outputs.
-   - Default usage: `uv run python infer_location.py --checkpoint checkpoints/location_cnn.pt --quantized-module-path artifacts/location_quantized.pkl`.
+   - Default usage: `uv run python infer_location.py --checkpoint checkpoints/location_cnn.pt --quantized-module-path artifacts/location_quantized.json`.
    - If the quantized module file is missing or corrupted, the script still runs clear inference so you can compare predictions without rerunning training.
+
+## 4. References
+
+- **Paper**: [Toward 5G NR High-Precision Indoor Positioning via Channel Frequency Response](assets/Toward_5G_NR_High-Precision_Indoor_Positioning_via_Channel_Frequency_Response_A_New_Paradigm_and_Dataset_Generation_Method.pdf) (included in `assets/`)
+- **Dataset**: [IEEE DataPort - CSI Dataset towards 5G NR High-Precision Positioning](https://ieee-dataport.org/open-access/csi-dataset-towards-5g-nr-high-precision-positioning)

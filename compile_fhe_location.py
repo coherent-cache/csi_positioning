@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import pickle
 from pathlib import Path
 from typing import Union
 
 import numpy as np
 import torch
 from concrete.fhe import Configuration
+from concrete.ml.common.serialization.dumpers import dump
 from concrete.ml.torch.compile import compile_torch_model
 
 from location_cnn.data import (
@@ -61,8 +61,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--quantized-module-path",
         type=Path,
-        default=Path("artifacts/location_quantized.pkl"),
-        help="Where to persist the compiled QuantizedModule (pickle).",
+        default=Path("artifacts/location_quantized.json"),
+        help="Where to persist the compiled QuantizedModule (JSON).",
     )
     parser.add_argument(
         "--debug-dir",
@@ -132,6 +132,14 @@ def load_or_compute_stats(
     return normalized_features, stored_mean, stored_std
 
 
+def convert_keys_to_str(obj):
+    if isinstance(obj, dict):
+        return {str(k): convert_keys_to_str(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [convert_keys_to_str(i) for i in obj]
+    return obj
+
+
 def main() -> int:
     args = parse_args()
 
@@ -179,8 +187,8 @@ def main() -> int:
     quantized_module.check_model_is_compiled()
 
     args.quantized_module_path.parent.mkdir(parents=True, exist_ok=True)
-    with args.quantized_module_path.open("wb") as handle:
-        pickle.dump(quantized_module, handle)
+    with args.quantized_module_path.open("w") as handle:
+        dump(quantized_module, handle)
 
     args.debug_dir.mkdir(parents=True, exist_ok=True)
     graph_txt = quantized_module.fhe_circuit.graph.format(show_locations=True)
@@ -192,8 +200,10 @@ def main() -> int:
     with (args.debug_dir / "statistics.json").open(
         "w", encoding="utf-8"
     ) as stats_handle:
+        # Convert keys to strings recursively because JSON requires string keys
+        statistics = convert_keys_to_str(quantized_module.fhe_circuit.statistics)
         json.dump(
-            quantized_module.fhe_circuit.statistics,
+            statistics,
             stats_handle,
             default=lambda value: str(value),
             indent=2,
