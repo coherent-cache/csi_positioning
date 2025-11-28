@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Union
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from concrete.fhe import Configuration
@@ -109,6 +110,18 @@ def parse_args() -> argparse.Namespace:
         help="Rounding thresholds used during compilation (None disables).",
     )
     parser.add_argument(
+        "--plot-path",
+        type=Path,
+        default=Path("plots/inference_scatter.png"),
+        help="Where to save the 3D scatter plot comparing targets/predictions/FHE outputs.",
+    )
+    parser.add_argument(
+        "--plot-dpi",
+        type=int,
+        default=150,
+        help="Image resolution for the saved inference plot.",
+    )
+    parser.add_argument(
         "--p-error",
         type=float,
         default=0.05,
@@ -194,6 +207,85 @@ def compile_model_on_the_fly(args):
         return None
 
 
+def plot_coordinate_comparison(
+    targets: np.ndarray,
+    predictions: np.ndarray,
+    fhe_predictions: np.ndarray | None,
+    output_path: Path,
+    dpi: int,
+    fhe_mode: str,
+) -> None:
+    """Render a 3D scatter plot comparing clear and FHE coordinates."""
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection="3d")
+
+    ax.scatter(
+        targets[:, 0],
+        targets[:, 1],
+        targets[:, 2],
+        c="black",
+        marker="x",
+        s=60,
+        label="Target",
+    )
+
+    ax.scatter(
+        predictions[:, 0],
+        predictions[:, 1],
+        predictions[:, 2],
+        c="tab:blue",
+        marker="o",
+        s=50,
+        label="Prediction",
+    )
+
+    if fhe_predictions is not None and fhe_predictions.size > 0:
+        ax.scatter(
+            fhe_predictions[:, 0],
+            fhe_predictions[:, 1],
+            fhe_predictions[:, 2],
+            c="tab:red",
+            marker="^",
+            s=50,
+            label=f"FHE ({fhe_mode})",
+        )
+
+    for tgt, pred in zip(targets, predictions):
+        ax.plot(
+            [tgt[0], pred[0]],
+            [tgt[1], pred[1]],
+            [tgt[2], pred[2]],
+            color="gray",
+            linestyle="--",
+            alpha=0.4,
+        )
+
+    if fhe_predictions is not None and fhe_predictions.size == len(targets):
+        for tgt, fhe_pred in zip(targets, fhe_predictions):
+            ax.plot(
+                [tgt[0], fhe_pred[0]],
+                [tgt[1], fhe_pred[1]],
+                [tgt[2], fhe_pred[2]],
+                color="tab:red",
+                linestyle=":",
+                alpha=0.5,
+            )
+
+    ax.set_title("UE Coordinate Comparison")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.legend(loc="upper left")
+    ax.grid(True, linestyle="--", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=dpi)
+    plt.close(fig)
+    print(f"Saved inference plot to {output_path}")
+
+
 def main() -> int:
     args = parse_args()
 
@@ -266,6 +358,10 @@ def main() -> int:
         print(f"Key generation complete in {time.time() - t_keygen:.2f}s.")
 
     print(f"Running inference on {len(indices)} samples...")
+    collected_targets: list[np.ndarray] = []
+    collected_predictions: list[np.ndarray] = []
+    collected_fhe_predictions: list[np.ndarray] = []
+
     for idx in tqdm(indices, desc="Inference Progress", unit="sample"):
         sample = val_features[idx : idx + 1]
         target = val_targets[idx]
@@ -277,6 +373,9 @@ def main() -> int:
         # Print details only if not using tqdm to avoid messing up the bar, or use tqdm.write
         tqdm.write(f"Sample {idx}: target={target.tolist()} pred={prediction.tolist()}")
         tqdm.write(f"  ℓ1 error={mean_absolute_error(target, prediction):.4f}")
+
+        collected_targets.append(target)
+        collected_predictions.append(prediction)
 
         if quantized_module is not None:
             t_start = time.time()
@@ -290,8 +389,22 @@ def main() -> int:
             if args.fhe_mode == "execute":
                 tqdm.write(f"  FHE inference took {t_end - t_start:.2f}s")
 
+            collected_fhe_predictions.append(np.array(fhe_pred).reshape(3))
+
     print("Inference done.")
     print(f"Normalization stats: mean={mean:.5f}, std={std:.5f}")
+
+    if collected_targets and collected_predictions:
+        plot_coordinate_comparison(
+            targets=np.stack(collected_targets),
+            predictions=np.stack(collected_predictions),
+            fhe_predictions=np.stack(collected_fhe_predictions)
+            if collected_fhe_predictions
+            else None,
+            output_path=args.plot_path,
+            dpi=args.plot_dpi,
+            fhe_mode=args.fhe_mode,
+        )
     return 0
 
 
