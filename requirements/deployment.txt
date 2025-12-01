@@ -1,0 +1,7 @@
+-r location_cnn.txt
+fastapi
+uvicorn
+pydantic
+requests
+python-multipart
+

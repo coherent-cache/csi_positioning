@@ -14,3 +14,5 @@ artifacts/
 *.mat
 *.pt
 *.pkl
+client_fhe_data/
+deployment_artifacts/
