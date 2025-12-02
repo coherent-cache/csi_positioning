@@ -47,10 +47,10 @@ def parse_args() -> argparse.Namespace:
         description="Compile the CSI location CNN for FHE deployment."
     )
     parser.add_argument(
-        "--checkpoint",
+        "--checkpoint-dir",
         type=Path,
-        default=Path("checkpoints/location_cnn.pt"),
-        help="Path to the trained PyTorch checkpoint.",
+        default=Path("checkpoints"),
+        help="Directory containing trained PyTorch checkpoints.",
     )
     parser.add_argument(
         "--dataset-file",
@@ -65,10 +65,10 @@ def parse_args() -> argparse.Namespace:
         help="Directory to save deployment artifacts (client.zip, server.zip, etc.).",
     )
     parser.add_argument(
-        "--stats-path",
+        "--stats-dir",
         type=Path,
-        default=Path("artifacts/feature_stats.json"),
-        help="Normalization stats file produced during training.",
+        default=Path("artifacts"),
+        help="Directory containing normalization stats.",
     )
     parser.add_argument(
         "--calib-samples",
@@ -100,6 +100,13 @@ def parse_args() -> argparse.Namespace:
         default="cpu",
         help="Device used by the Concrete compiler (cpu or cuda).",
     )
+    parser.add_argument(
+        "--architecture",
+        type=str,
+        default="optimized",
+        choices=["optimized", "original"],
+        help="Model architecture to compile.",
+    )
     return parser.parse_args()
 
 
@@ -129,8 +136,14 @@ def load_or_compute_stats(
 def main() -> int:
     args = parse_args()
 
-    if not args.checkpoint.exists():
-        print("Checkpoint missing; run train_location_cnn.py first.")
+    checkpoint_path = args.checkpoint_dir / f"location_cnn_{args.architecture}.pt"
+    stats_path = args.stats_dir / f"feature_stats_{args.architecture}.json"
+    deployment_path = args.deployment_dir / args.architecture
+
+    if not checkpoint_path.exists():
+        print(
+            f"Checkpoint missing: {checkpoint_path}. Run train_location_cnn.py first."
+        )
         return 1
 
     if not args.dataset_file.exists():
@@ -138,9 +151,7 @@ def main() -> int:
         return 1
 
     print("Loading calibration data...")
-    calib_features, mean, std = load_or_compute_stats(
-        args.dataset_file, args.stats_path
-    )
+    calib_features, mean, std = load_or_compute_stats(args.dataset_file, stats_path)
     calib_features = calib_features[: args.calib_samples]
     if calib_features.shape[0] == 0:
         print("No calibration samples left after slicing.")
@@ -149,8 +160,17 @@ def main() -> int:
     calib_tensor = torch.from_numpy(calib_features).float()
 
     print("Loading PyTorch model...")
-    model = LocationCNN()
-    checkpoint = torch.load(args.checkpoint, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    # Determine architecture
+    ckpt_arch = checkpoint.get("architecture", "optimized")
+    if ckpt_arch != args.architecture:
+        print(
+            f"Warning: Checkpoint architecture ({ckpt_arch}) does not match requested ({args.architecture})."
+        )
+
+    print(f"Loading model with architecture: {args.architecture}")
+    model = LocationCNN(architecture=args.architecture)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
@@ -176,18 +196,17 @@ def main() -> int:
     print("Checking model compilation...")
     quantized_module.check_model_is_compiled()
 
-    print(f"Saving deployment artifacts to {args.deployment_dir}...")
-    args.deployment_dir.mkdir(parents=True, exist_ok=True)
-    
+    print(f"Saving deployment artifacts to {deployment_path}...")
+    deployment_path.mkdir(parents=True, exist_ok=True)
+
     # Use FHEModelDev to save artifacts
-    dev = FHEModelDev(path_dir=str(args.deployment_dir), model=quantized_module)
+    dev = FHEModelDev(path_dir=str(deployment_path), model=quantized_module)
     dev.save()
 
     print("FHE compilation and export succeeded.")
-    print(f"Artifacts in: {args.deployment_dir}")
+    print(f"Artifacts in: {deployment_path}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

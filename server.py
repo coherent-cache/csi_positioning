@@ -37,9 +37,14 @@ class CleartextInput(BaseModel):
 app = FastAPI(title="Location CNN FHE Server")
 
 # Configuration
-DEPLOYMENT_DIR = Path(os.environ.get("DEPLOYMENT_DIR", "deployment_artifacts"))
-CHECKPOINT_PATH = Path(os.environ.get("CHECKPOINT_PATH", "checkpoints/location_cnn.pt"))
-STATS_PATH = Path(os.environ.get("STATS_PATH", "artifacts/feature_stats.json"))
+ARCHITECTURE = os.environ.get("ARCHITECTURE", "optimized")
+DEPLOYMENT_DIR = (
+    Path(os.environ.get("DEPLOYMENT_DIR", "deployment_artifacts")) / ARCHITECTURE
+)
+CHECKPOINT_DIR = Path(os.environ.get("CHECKPOINT_DIR", "checkpoints"))
+CHECKPOINT_PATH = CHECKPOINT_DIR / f"location_cnn_{ARCHITECTURE}.pt"
+STATS_DIR = Path(os.environ.get("STATS_DIR", "artifacts"))
+STATS_PATH = STATS_DIR / f"feature_stats_{ARCHITECTURE}.json"
 PORT = int(os.environ.get("PORT", "8000"))
 
 # Global state
@@ -59,8 +64,16 @@ def load_clear_model():
         print("Warning: Checkpoint not found. Cleartext inference will fail.")
         return
 
-    model = LocationCNN()
     checkpoint = torch.load(CHECKPOINT_PATH, map_location="cpu")
+    # Use the environment variable architecture primarily, but verify against checkpoint
+    ckpt_arch = checkpoint.get("architecture", "optimized")
+    if ckpt_arch != ARCHITECTURE:
+        print(
+            f"Warning: Loaded checkpoint architecture {ckpt_arch} differs from env {ARCHITECTURE}"
+        )
+
+    print(f"Initializing model with architecture: {ARCHITECTURE}")
+    model = LocationCNN(architecture=ARCHITECTURE)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     clear_model = model
@@ -71,7 +84,9 @@ def load_clear_model():
             f"Loaded normalization stats: mean={feature_mean:.4f}, std={feature_std:.4f}"
         )
     else:
-        print("Warning: Stats file not found. Normalization might be incorrect.")
+        print(
+            f"Warning: Stats file not found at {STATS_PATH}. Normalization might be incorrect."
+        )
 
 
 @app.on_event("startup")
@@ -139,17 +154,6 @@ async def compute_clear(input_data: CleartextInput):
     try:
         # Prepare input
         features = np.array(input_data.features, dtype=np.float32).reshape(4, 16, 193)
-
-        # Normalize if stats are available
-        # Note: The input is expected to be raw features?
-        # Or normalized features?
-        # Let's assume raw features to match the 'client' loading raw data.
-        # But we need to be consistent with how client sends data.
-        # If client normalizes before sending, we shouldn't normalize here.
-        # Standard flow: Client prepares input.
-        # In FHE flow: Client normalizes -> quantizes -> encrypts.
-        # So in clear flow: Client should normalize -> send.
-        # I will assume the client handles normalization to be consistent with FHE flow where client owns preprocessing.
 
         input_tensor = torch.from_numpy(features).unsqueeze(0)  # Add batch dim
 

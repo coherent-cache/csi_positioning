@@ -47,10 +47,10 @@ def parse_args() -> argparse.Namespace:
         description="Compile the CSI location CNN for FHE execution."
     )
     parser.add_argument(
-        "--checkpoint",
+        "--checkpoint-dir",
         type=Path,
-        default=Path("checkpoints/location_cnn.pt"),
-        help="Path to the trained PyTorch checkpoint.",
+        default=Path("checkpoints"),
+        help="Directory containing trained PyTorch checkpoints.",
     )
     parser.add_argument(
         "--dataset-file",
@@ -59,22 +59,10 @@ def parse_args() -> argparse.Namespace:
         help="Dataset used for calibration (default: SNR50 outdoor).",
     )
     parser.add_argument(
-        "--quantized-module-path",
+        "--artifacts-dir",
         type=Path,
-        default=Path("artifacts/location_quantized.json"),
-        help="Where to persist the compiled QuantizedModule (JSON).",
-    )
-    parser.add_argument(
-        "--debug-dir",
-        type=Path,
-        default=Path("artifacts/location_quantized_debug"),
-        help="Directory for MLIR/graph dumps generated during troubleshooting.",
-    )
-    parser.add_argument(
-        "--stats-path",
-        type=Path,
-        default=Path("artifacts/feature_stats.json"),
-        help="Normalization stats file produced during training.",
+        default=Path("artifacts"),
+        help="Directory to persist compiled artifacts and stats.",
     )
     parser.add_argument(
         "--calib-samples",
@@ -105,6 +93,13 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="cpu",
         help="Device used by the Concrete compiler (cpu or cuda).",
+    )
+    parser.add_argument(
+        "--architecture",
+        type=str,
+        default="optimized",
+        choices=["optimized", "original"],
+        help="Model architecture to compile.",
     )
     return parser.parse_args()
 
@@ -143,17 +138,24 @@ def convert_keys_to_str(obj):
 def main() -> int:
     args = parse_args()
 
-    if not args.checkpoint.exists():
-        print("Checkpoint missing; run train_location_cnn.py first.")
+    checkpoint_path = args.checkpoint_dir / f"location_cnn_{args.architecture}.pt"
+    stats_path = args.artifacts_dir / f"feature_stats_{args.architecture}.json"
+    quantized_module_path = (
+        args.artifacts_dir / f"location_quantized_{args.architecture}.json"
+    )
+    debug_dir = args.artifacts_dir / f"location_quantized_debug_{args.architecture}"
+
+    if not checkpoint_path.exists():
+        print(
+            f"Checkpoint missing: {checkpoint_path}. Run train_location_cnn.py first."
+        )
         return 1
 
     if not args.dataset_file.exists():
         print("Dataset file missing; provide --dataset-file before compiling.")
         return 1
 
-    calib_features, mean, std = load_or_compute_stats(
-        args.dataset_file, args.stats_path
-    )
+    calib_features, mean, std = load_or_compute_stats(args.dataset_file, stats_path)
     calib_features = calib_features[: args.calib_samples]
     if calib_features.shape[0] == 0:
         print("No calibration samples left after slicing.")
@@ -161,8 +163,18 @@ def main() -> int:
 
     calib_tensor = torch.from_numpy(calib_features).float()
 
-    model = LocationCNN()
-    checkpoint = torch.load(args.checkpoint, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    # Determine architecture
+    ckpt_arch = checkpoint.get("architecture", "optimized")
+    if ckpt_arch != args.architecture:
+        print(
+            f"Warning: Checkpoint architecture {ckpt_arch} differs from requested {args.architecture}"
+        )
+        # We proceed with requested architecture, assuming the user knows what they are doing (or fail later)
+
+    print(f"Loading model with architecture: {args.architecture}")
+    model = LocationCNN(architecture=args.architecture)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
@@ -186,20 +198,18 @@ def main() -> int:
 
     quantized_module.check_model_is_compiled()
 
-    args.quantized_module_path.parent.mkdir(parents=True, exist_ok=True)
-    with args.quantized_module_path.open("w") as handle:
+    quantized_module_path.parent.mkdir(parents=True, exist_ok=True)
+    with quantized_module_path.open("w") as handle:
         dump(quantized_module, handle)
 
-    args.debug_dir.mkdir(parents=True, exist_ok=True)
+    debug_dir.mkdir(parents=True, exist_ok=True)
     graph_txt = quantized_module.fhe_circuit.graph.format(show_locations=True)
-    (args.debug_dir / "circuit.graph.txt").write_text(graph_txt, encoding="utf-8")
-    (args.debug_dir / "circuit.mlir.txt").write_text(
+    (debug_dir / "circuit.graph.txt").write_text(graph_txt, encoding="utf-8")
+    (debug_dir / "circuit.mlir.txt").write_text(
         quantized_module.fhe_circuit.mlir, encoding="utf-8"
     )
 
-    with (args.debug_dir / "statistics.json").open(
-        "w", encoding="utf-8"
-    ) as stats_handle:
+    with (debug_dir / "statistics.json").open("w", encoding="utf-8") as stats_handle:
         # Convert keys to strings recursively because JSON requires string keys
         statistics = convert_keys_to_str(quantized_module.fhe_circuit.statistics)
         json.dump(
@@ -210,9 +220,9 @@ def main() -> int:
         )
 
     print("FHE compilation succeeded.")
-    print(f"Saved compiled module to {args.quantized_module_path}")
+    print(f"Saved compiled module to {quantized_module_path}")
     print(f"Mean / std used: {mean:.5f}, {std:.5f}")
-    print(f"Debug traces written to {args.debug_dir}")
+    print(f"Debug traces written to {debug_dir}")
     return 0
 
 

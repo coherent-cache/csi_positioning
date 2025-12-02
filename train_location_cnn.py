@@ -45,22 +45,22 @@ def parse_args() -> argparse.Namespace:
         help="Path to the .mat dataset (defaults to SNR50 outdoor).",
     )
     parser.add_argument(
-        "--checkpoint",
+        "--checkpoint-dir",
         type=Path,
-        default=Path("checkpoints/location_cnn.pt"),
-        help="Where to store the trained weights.",
+        default=Path("checkpoints"),
+        help="Directory to store trained weights.",
     )
     parser.add_argument(
-        "--stats-path",
+        "--stats-dir",
         type=Path,
-        default=Path("artifacts/feature_stats.json"),
-        help="JSON file to persist normalization stats.",
+        default=Path("artifacts"),
+        help="Directory to persist normalization stats.",
     )
     parser.add_argument(
-        "--metrics-path",
+        "--metrics-dir",
         type=Path,
-        default=Path("logs/location_training_metrics.csv"),
-        help="CSV file where loss/accuracy per epoch is recorded.",
+        default=Path("logs"),
+        help="Directory to store training metrics.",
     )
     parser.add_argument(
         "--epochs",
@@ -108,6 +108,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Load the checkpoint and continue training (does not extend epoch count).",
     )
+    parser.add_argument(
+        "--architecture",
+        type=str,
+        default="optimized",
+        choices=["optimized", "original"],
+        help="Model architecture to use ('optimized' or 'original').",
+    )
     return parser.parse_args()
 
 
@@ -130,13 +137,20 @@ def main() -> int:
         )
         return 1
 
+    # Construct architecture-specific paths
+    checkpoint_path = args.checkpoint_dir / f"location_cnn_{args.architecture}.pt"
+    stats_path = args.stats_dir / f"feature_stats_{args.architecture}.json"
+    metrics_path = (
+        args.metrics_dir / f"location_training_metrics_{args.architecture}.csv"
+    )
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    checkpoint_exists = args.checkpoint.exists()
+    checkpoint_exists = checkpoint_path.exists()
     if checkpoint_exists and not args.retrain and not args.resume:
         print(
-            f"Checkpoint {args.checkpoint} already exists. "
+            f"Checkpoint {checkpoint_path} already exists. "
             "Use --retrain to force a new run or --resume to continue training."
         )
         return 0
@@ -144,7 +158,7 @@ def main() -> int:
     features, targets = load_mat_dataset(args.dataset_file)
     normalized_features, mean, std = normalize_features(features)
 
-    save_feature_stats(args.stats_path, mean, std)
+    save_feature_stats(stats_path, mean, std)
     train_features, val_features, train_targets, val_targets = split_dataset(
         normalized_features,
         targets,
@@ -168,11 +182,21 @@ def main() -> int:
         preferred_device = "cpu"
 
     device = torch.device(preferred_device)
-    model = LocationCNN()
+
+    print(f"Using architecture: {args.architecture}")
+    model = LocationCNN(architecture=args.architecture)
     model.to(device)
 
     if args.resume and checkpoint_exists:
-        checkpoint = torch.load(args.checkpoint, map_location=device)
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        # Verify architecture matches
+        ckpt_arch = checkpoint.get("architecture", "optimized")
+        if ckpt_arch != args.architecture:
+            print(
+                f"Error: Checkpoint architecture ({ckpt_arch}) does not match requested ({args.architecture})."
+            )
+            return 1
+
         model.load_state_dict(checkpoint["model_state_dict"])
         print("Resumed training from checkpoint.")
 
@@ -247,22 +271,23 @@ def main() -> int:
             f"val loss={metrics['val_loss']:.4f} train r2={train_r2:.3f} val r2={val_r2:.3f}"
         )
 
-    args.checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "mean": mean,
             "std": std,
             "epochs": args.epochs,
+            "architecture": args.architecture,
         },
-        args.checkpoint,
+        checkpoint_path,
     )
 
-    write_metrics(args.metrics_path, history)
+    write_metrics(metrics_path, history)
 
     duration = time.time() - start_time
-    print(f"Training completed in {duration:.1f}s. Checkpoint: {args.checkpoint}")
-    print(f"Metrics logged to {args.metrics_path}")
+    print(f"Training completed in {duration:.1f}s. Checkpoint: {checkpoint_path}")
+    print(f"Metrics logged to {metrics_path}")
     return 0
 
 

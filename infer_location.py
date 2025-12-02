@@ -54,22 +54,16 @@ def parse_args() -> argparse.Namespace:
         help="The CSI dataset used for validation samples.",
     )
     parser.add_argument(
-        "--checkpoint",
+        "--checkpoint-dir",
         type=Path,
-        default=Path("checkpoints/location_cnn.pt"),
-        help="Trained PyTorch checkpoint.",
+        default=Path("checkpoints"),
+        help="Directory containing trained PyTorch checkpoints.",
     )
     parser.add_argument(
-        "--stats-path",
+        "--artifacts-dir",
         type=Path,
-        default=Path("artifacts/feature_stats.json"),
-        help="JSON file with normalization stats.",
-    )
-    parser.add_argument(
-        "--quantized-module-path",
-        type=Path,
-        default=Path("artifacts/location_quantized.json"),
-        help="Optional compiled QuantizedModule for FHE runs.",
+        default=Path("artifacts"),
+        help="Directory containing compiled artifacts and stats.",
     )
     parser.add_argument(
         "--max-inference-samples",
@@ -121,10 +115,11 @@ def parse_args() -> argparse.Namespace:
         help="Device used by the Concrete compiler (cpu or cuda).",
     )
     parser.add_argument(
-        "--results-csv",
-        type=Path,
-        default=Path("artifacts/inference_results.csv"),
-        help="Path where the inference results CSV will be written.",
+        "--architecture",
+        type=str,
+        default="optimized",
+        choices=["optimized", "original"],
+        help="Model architecture to use.",
     )
     return parser.parse_args()
 
@@ -163,22 +158,19 @@ def load_or_compute_stats(
     return normalized_features, stored_mean, stored_std
 
 
-def compile_model_on_the_fly(args):
+def compile_model_on_the_fly(args, model):
     """Compile the model on the fly for FHE execution."""
     print("Compiling model on the fly for FHE execution...")
 
-    calib_features, _, _ = load_or_compute_stats(args.dataset_file, args.stats_path)
+    stats_path = args.artifacts_dir / f"feature_stats_{args.architecture}.json"
+
+    calib_features, _, _ = load_or_compute_stats(args.dataset_file, stats_path)
     calib_features = calib_features[: args.calib_samples]
     if calib_features.shape[0] == 0:
         print("No calibration samples left after slicing.")
         return None
 
     calib_tensor = torch.from_numpy(calib_features).float()
-
-    model = LocationCNN()
-    checkpoint = torch.load(args.checkpoint, map_location="cpu")
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
 
     n_bits = args.n_bits if args.n_bits is not None else DEFAULT_N_BITS
     config = Configuration(enable_tlu_fusing=True, print_tlu_fusing=False)
@@ -210,8 +202,17 @@ def compute_error_metrics(
 def main() -> int:
     args = parse_args()
 
-    if not args.checkpoint.exists():
-        print("Checkpoint not found; run train_location_cnn.py first.")
+    checkpoint_path = args.checkpoint_dir / f"location_cnn_{args.architecture}.pt"
+    stats_path = args.artifacts_dir / f"feature_stats_{args.architecture}.json"
+    quantized_module_path = (
+        args.artifacts_dir / f"location_quantized_{args.architecture}.json"
+    )
+    results_csv_path = args.artifacts_dir / f"inference_results_{args.architecture}.csv"
+
+    if not checkpoint_path.exists():
+        print(
+            f"Checkpoint not found: {checkpoint_path}. Run train_location_cnn.py first."
+        )
         return 1
 
     if not args.dataset_file.exists():
@@ -220,7 +221,7 @@ def main() -> int:
 
     features, targets = load_mat_dataset(args.dataset_file)
     normalized_features, mean, std = normalize_features(
-        features, *load_feature_stats(args.stats_path)
+        features, *load_feature_stats(stats_path)
     )
     if normalized_features.size == 0:
         print("Dataset contains no samples after normalization.")
@@ -233,8 +234,17 @@ def main() -> int:
         random_state=args.seed,
     )
 
-    model = LocationCNN()
-    checkpoint = torch.load(args.checkpoint, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    # Verify architecture
+    ckpt_arch = checkpoint.get("architecture", "optimized")
+    if ckpt_arch != args.architecture:
+        print(
+            f"Warning: Checkpoint architecture ({ckpt_arch}) does not match requested ({args.architecture})."
+        )
+
+    print(f"Loading model with architecture: {args.architecture}")
+    model = LocationCNN(architecture=args.architecture)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
@@ -242,20 +252,20 @@ def main() -> int:
     quantized_module = None
     if args.fhe_mode in ("simulate", "execute"):
         # Try compiling on the fly first because loaded module won't have circuit
-        quantized_module = compile_model_on_the_fly(args)
+        quantized_module = compile_model_on_the_fly(args, model)
         if quantized_module is None:
             print(
                 "On-the-fly compilation failed. Falling back to loading from disk (circuit might be missing)."
             )
-            quantized_module = load_quantized_module(args.quantized_module_path)
+            quantized_module = load_quantized_module(quantized_module_path)
     else:
-        quantized_module = load_quantized_module(args.quantized_module_path)
+        quantized_module = load_quantized_module(quantized_module_path)
 
     if quantized_module is not None:
         if args.fhe_mode in ("simulate", "execute"):
             print("Using on-the-fly compiled module for FHE.")
         else:
-            print(f"Loaded quantized module from {args.quantized_module_path}")
+            print(f"Loaded quantized module from {quantized_module_path}")
 
         # Check if FHE circuit is available for simulation/execution
     if (
@@ -355,10 +365,10 @@ def main() -> int:
         "pred_fhe_z",
     ]
     header = ",".join(header_fields)
-    args.results_csv.parent.mkdir(parents=True, exist_ok=True)
+    results_csv_path.parent.mkdir(parents=True, exist_ok=True)
     combined = np.hstack((ground_truth, pred_plain, pred_fhe))
-    np.savetxt(args.results_csv, combined, delimiter=",", header=header, comments="")
-    print(f"Saved inference results to {args.results_csv}")
+    np.savetxt(results_csv_path, combined, delimiter=",", header=header, comments="")
+    print(f"Saved inference results to {results_csv_path}")
 
     # Print comparison table
     print("\n=== Performance Comparison ===")
